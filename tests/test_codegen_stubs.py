@@ -236,6 +236,70 @@ class TestStubFallback:
         assert gen._imu_class.__name__ == "IMU"
         assert gen._analog_sensor_class.__name__ == "AnalogSensor"
 
+    def test_stub_class_init_params_come_from_pyi_not_object_init(self):
+        from raccoon_cli.codegen.introspection import (
+            _stub_class_registry,
+            get_init_params,
+            resolve_class,
+        )
+        _stub_class_registry.clear()
+
+        cls = resolve_class("raccoon.DigitalSensor")
+        params = get_init_params(cls)
+
+        assert "port" in params
+        assert "args" not in params
+        assert "kwargs" not in params
+        assert params["port"].default is inspect.Parameter.empty
+
+    def test_stub_motor_calibration_param_type_is_inferred(self):
+        from raccoon_cli.codegen.introspection import (
+            _stub_class_registry,
+            infer_param_type,
+            resolve_class,
+        )
+        _stub_class_registry.clear()
+
+        motor_cls = resolve_class("raccoon.Motor")
+        calibration_cls = infer_param_type(motor_cls, "calibration")
+
+        assert calibration_cls is not None
+        assert calibration_cls.__name__ == "MotorCalibration"
+
+    def test_stub_same_module_param_type_is_inferred(self):
+        from raccoon_cli.codegen.introspection import (
+            _stub_class_registry,
+            infer_param_type,
+            resolve_class,
+        )
+        _stub_class_registry.clear()
+
+        odometry_cls = resolve_class("raccoon.FusedOdometry")
+        config_cls = infer_param_type(odometry_cls, "config")
+
+        assert config_cls is not None
+        assert config_cls.__name__ == "FusedOdometryConfig"
+
+    def test_defs_codegen_with_stubs_emits_nested_constructor(self):
+        from raccoon_cli.codegen.introspection import _stub_class_registry
+        from raccoon_cli.codegen.generators.defs_generator import DefsGenerator
+        _stub_class_registry.clear()
+
+        gen = DefsGenerator()
+        body = gen.generate_body({
+            "button": {"type": "DigitalSensor", "port": 10},
+            "left_motor": {
+                "type": "Motor",
+                "port": 0,
+                "inverted": False,
+                "calibration": {"ticks_to_rad": 0.00002, "vel_lpf_alpha": 0.8},
+            },
+        })
+
+        assert "DigitalSensor(port=10)" in body
+        assert "MotorCalibration(" in body
+        assert '{"ticks_to_rad"' not in body
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — require raccoon installed

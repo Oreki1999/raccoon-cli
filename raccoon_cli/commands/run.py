@@ -97,9 +97,16 @@ def _run_local(
 
     if (project_root / "pyproject.toml").exists():
         import shutil
-        uv = shutil.which("uv") or "uv"
-        cmd_parts = [uv, "run", "start", *args]
-        logger.info("pyproject.toml found — using uv run start")
+        uv = shutil.which("uv")
+        if uv:
+            cmd_parts = [uv, "run", "start", *args]
+            logger.info("pyproject.toml found — using uv run start")
+        else:
+            logger.warning(
+                "pyproject.toml found but uv is not installed or not in PATH; "
+                "falling back to python -m src.main"
+            )
+            cmd_parts = [sys.executable, "-m", "src.main", *args]
     else:
         cmd_parts = [sys.executable, "-m", "src.main", *args]
     logger.info(f"Executing: {' '.join(cmd_parts)}")

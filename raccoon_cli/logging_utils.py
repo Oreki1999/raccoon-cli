@@ -121,11 +121,29 @@ _RACCOON_ART = (
     "     ███████  ▄██████       "
 )
 
+_ASCII_RACCOON_ART = (
+    "          ____\n"
+    "      ___/    \\___\n"
+    "    _/  RACCOON  \\_\n"
+    "   /  TOOLCHAIN    \\\n"
+    "   \\___        ___/\n"
+    "       \\______/\n"
+)
+
+
+def _console_supports_unicode(console: Console) -> bool:
+    encoding = getattr(console.file, "encoding", None) or ""
+    return "utf" in encoding.lower()
+
 
 def render_banner(console: Console) -> None:
     """Display an eye-catching banner at CLI start."""
+    unicode_ok = _console_supports_unicode(console)
+    art = _RACCOON_ART if unicode_ok else _ASCII_RACCOON_ART
+    panel_box = box.ROUNDED if unicode_ok else box.ASCII
+
     content = Text.assemble(
-        (_RACCOON_ART + "\n", "bold #9ca3af"),
+        (art + "\n", "bold #9ca3af"),
         "\n",
         ("RACCOON TOOLCHAIN\n", "bold cyan"),
         ("CLI for Raccoon Projects\n", "bold white"),
@@ -136,7 +154,7 @@ def render_banner(console: Console) -> None:
         Panel.fit(
             Align.center(content),
             border_style="cyan",
-            box=box.ROUNDED,
+            box=panel_box,
             padding=(1, 4),
         )
     )

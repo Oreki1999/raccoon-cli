@@ -18,6 +18,51 @@ logger = logging.getLogger("raccoon")
 _stub_class_registry: dict[str, type] = {}
 
 
+def _build_import_map(module_name: str, tree: ast.Module) -> dict[str, str]:
+    """Map imported local names in a stub module to fully-qualified names."""
+    import_map: dict[str, str] = {}
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ImportFrom) and node.names:
+            for alias in node.names:
+                local_name = alias.asname if alias.asname else alias.name
+                if node.level == 0 and node.module:
+                    import_map[local_name] = f"{node.module}.{alias.name}"
+                elif node.level > 0:
+                    parts = module_name.split(".")
+                    base_parts = parts[:-node.level] if node.level <= len(parts) else []
+                    base = ".".join(base_parts)
+                    source_module = f"{base}.{node.module}" if node.module else base
+                    import_map[local_name] = f"{source_module}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname if alias.asname else alias.name
+                import_map[local_name] = alias.name
+    return import_map
+
+
+def _annotation_type_names(annotation: ast.AST) -> list[str]:
+    """Return candidate type names from a pyi annotation expression."""
+    if isinstance(annotation, ast.Name):
+        return [] if annotation.id == "None" else [annotation.id]
+    if isinstance(annotation, ast.Attribute):
+        return [ast.unparse(annotation)]
+    if isinstance(annotation, ast.Constant) and annotation.value is None:
+        return []
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _annotation_type_names(annotation.left) + _annotation_type_names(annotation.right)
+    if isinstance(annotation, ast.Subscript):
+        base = ast.unparse(annotation.value)
+        if base in {"Optional", "typing.Optional", "Union", "typing.Union"}:
+            slice_node = annotation.slice
+            if isinstance(slice_node, ast.Tuple):
+                names: list[str] = []
+                for elt in slice_node.elts:
+                    names.extend(_annotation_type_names(elt))
+                return names
+            return _annotation_type_names(slice_node)
+    return [ast.unparse(annotation)]
+
+
 def resolve_class(qualname: str) -> type:
     """Resolve a fully-qualified class name to a class object.
 
@@ -89,23 +134,7 @@ def _find_pyi_for_module(module_name: str) -> Optional[Path]:
 
 def _resolve_pyi_bases(class_node: ast.ClassDef, module_name: str, tree: ast.Module) -> List[type]:
     """Resolve base classes of a synthesised stub class from the AST import map."""
-    import_map: dict[str, str] = {}
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ImportFrom) and node.names:
-            for alias in node.names:
-                local_name = alias.asname if alias.asname else alias.name
-                if node.level == 0 and node.module:
-                    import_map[local_name] = f"{node.module}.{alias.name}"
-                elif node.level > 0:
-                    parts = module_name.split(".")
-                    base_parts = parts[:-node.level] if node.level <= len(parts) else []
-                    base = ".".join(base_parts)
-                    source_module = f"{base}.{node.module}" if node.module else base
-                    import_map[local_name] = f"{source_module}.{alias.name}"
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                local_name = alias.asname if alias.asname else alias.name
-                import_map[local_name] = alias.name
+    import_map = _build_import_map(module_name, tree)
 
     bases: List[type] = []
     for base_expr in class_node.bases:
@@ -148,7 +177,14 @@ def _resolve_class_from_stub(qualname: str) -> type:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             raw_bases = _resolve_pyi_bases(node, module_name, tree)
             bases = tuple(raw_bases) if raw_bases else (object,)
-            cls = type(class_name, bases, {"__module__": module_name})
+            cls = type(
+                class_name,
+                bases,
+                {
+                    "__module__": module_name,
+                    "__raccoon_stub_class__": True,
+                },
+            )
             _stub_class_registry[qualname] = cls
             return cls
 
@@ -240,6 +276,15 @@ def _parse_param_type_from_pyi(cls: type, param_name: str) -> Optional[type]:
     if class_node is None:
         return None
 
+    pyi = _find_pyi_for_module(cls.__module__)
+    if pyi is None:
+        return None
+    try:
+        tree = ast.parse(pyi.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+    import_map = _build_import_map(cls.__module__, tree)
+
     for item in class_node.body:
         if not isinstance(item, ast.FunctionDef) or item.name != "__init__":
             continue
@@ -248,17 +293,30 @@ def _parse_param_type_from_pyi(cls: type, param_name: str) -> Optional[type]:
             if arg.arg != param_name or arg.annotation is None:
                 continue
 
-            type_str = ast.unparse(arg.annotation)
-            # Try as fully-qualified name first
-            try:
-                return resolve_class(type_str)
-            except ImportError:
-                pass
-            # Try just the class name (strips module prefix)
-            short = type_str.split(".")[-1]
-            if short != type_str:
+            for type_str in _annotation_type_names(arg.annotation):
+                candidates = []
+                if "." in type_str:
+                    candidates.append(type_str)
+                if type_str in import_map:
+                    candidates.append(import_map[type_str])
+                if "." not in type_str:
+                    candidates.append(f"{cls.__module__}.{type_str}")
+                    candidates.append(f"raccoon.{type_str}")
+
+                for candidate in candidates:
+                    try:
+                        return resolve_class(candidate)
+                    except ImportError:
+                        pass
+
+                short = type_str.split(".")[-1]
+                if short != type_str:
+                    try:
+                        return resolve_class(f"raccoon.{short}")
+                    except ImportError:
+                        pass
                 try:
-                    return resolve_class(f"raccoon.{short}")
+                    return resolve_class(type_str)
                 except ImportError:
                     pass
 
@@ -271,13 +329,20 @@ def get_init_params(cls: type) -> Dict[str, Any]:
     Falls back to parsing the installed .pyi stub when inspect.signature fails
     (common for pybind11 native classes).
     """
-    try:
-        sig = inspect.signature(cls.__init__)
-        params = {name: p for name, p in sig.parameters.items() if name != "self"}
-        if params:
-            return params
-    except (ValueError, TypeError):
-        pass
+    if not getattr(cls, "__raccoon_stub_class__", False):
+        try:
+            sig = inspect.signature(cls.__init__)
+            params = {
+                name: p
+                for name, p in sig.parameters.items()
+                if name != "self"
+                and p.kind
+                not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            }
+            if params:
+                return params
+        except (ValueError, TypeError):
+            pass
 
     pyi_params = _parse_init_from_pyi(cls)
     if pyi_params is not None:
