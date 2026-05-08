@@ -254,5 +254,3 @@ class DefsGenerator(BaseGenerator):
             f"\n__all__ = ['{self.class_name}', '{instance_name}']\n"
         )
 
-    def generate_imports(self) -> str:
-        return super().generate_imports()
