@@ -65,8 +65,7 @@ class DefsStubGenerator(BaseGenerator):
         preset_classes: List[str] = []
 
         # Always need these
-        imports.add("from typing import List")
-        imports.add("from raccoon.step.servo.preset import ServoPreset, _PresetPosition")
+        imports.add("from typing import Any, List, Optional")
 
         # Collect field info
         fields: List[Tuple[str, str]] = []  # (name, type_str)
@@ -91,6 +90,7 @@ class DefsStubGenerator(BaseGenerator):
                 fields.append((field_name, "SensorGroup"))
             elif type_name == "Servo" and positions and isinstance(positions, dict):
                 # Generate a typed preset class for this servo
+                imports.add("from raccoon import Servo")
                 class_name = f"_{_to_camel(field_name)}Preset"
                 preset_classes.append(
                     _build_preset_class(class_name, positions)
@@ -122,6 +122,13 @@ class DefsStubGenerator(BaseGenerator):
         lines.append("")
 
         # Preset protocol classes
+        if preset_classes:
+            lines.append("class _PresetPosition:")
+            lines.append("    def __call__(self, speed: Optional[float] = ...) -> Any: ...")
+            lines.append("")
+            lines.append("class ServoPreset:")
+            lines.append("    pass")
+
         for cls_code in preset_classes:
             lines.append("")
             lines.append(cls_code)

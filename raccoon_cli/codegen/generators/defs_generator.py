@@ -34,6 +34,7 @@ class DefsGenerator(BaseGenerator):
         self._imu_class = resolve_class("raccoon.IMU")
         self._analog_sensor_class = resolve_class("raccoon.AnalogSensor")
         self._analog_sensor_fields: list[str] = []
+        self._needs_servo_preset_import = False
 
     def get_output_filename(self) -> str:
         return "defs.py"
@@ -85,6 +86,7 @@ class DefsGenerator(BaseGenerator):
 
     def generate_body(self, data: Dict[str, Any]) -> str:
         self._analog_sensor_fields = []
+        self._needs_servo_preset_import = False
 
         imu_cfg = data.get("imu", {})
         imu_params = {k: v for k, v in imu_cfg.items() if k != "type"}
@@ -175,12 +177,30 @@ class DefsGenerator(BaseGenerator):
         positions: Dict[str, float],
         offset: float,
     ) -> str:
-        preset_cls = resolve_class("raccoon.ServoPreset")
-        self.imports.add(preset_cls)
+        self._needs_servo_preset_import = True
         positions_literal = build_literal_expr(positions)
         if offset:
             return f"ServoPreset({servo_expr}, positions={positions_literal}, offset={build_literal_expr(offset)})"
         return f"ServoPreset({servo_expr}, positions={positions_literal})"
+
+    def generate_imports(self) -> str:
+        imports = super().generate_imports()
+        if not self._needs_servo_preset_import:
+            return imports
+
+        servo_preset_import = (
+            "try:\n"
+            "    from raccoon import ServoPreset\n"
+            "except ImportError:\n"
+            "    try:\n"
+            "        from raccoon.step.servo.preset import ServoPreset\n"
+            "    except ImportError:\n"
+            "        from raccoon.step.servo.preset import Servopreset as ServoPreset"
+        )
+
+        if imports:
+            return f"{imports}\n\n{servo_preset_import}"
+        return servo_preset_import
 
     def _build_imu_expr(self, params: Dict[str, Any]) -> str:
         pieces = [f"{name}={build_literal_expr(value)}" for name, value in params.items()]
